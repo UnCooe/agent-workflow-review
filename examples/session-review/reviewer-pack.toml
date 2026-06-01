@@ -1,0 +1,17 @@
+[pack]
+id = "example-tts"
+version = "0.1.0"
+
+[tool_families]
+mcp = ["inspect_request", "inspect_user_window", "get_trace", "get_log_context"]
+shell = ["exec_command", "bash"]
+subagent = ["spawn_agent", "wait_agent", "close_agent"]
+
+[task_families.tts_provider_verification]
+trigger_keywords = ["provider", "厂商", "走哪家", "role_id", "voice_id"]
+preferred_route = "mcp_first"
+expected_data = ["provider", "route_reason", "role_voice_lang", "evidence_ref"]
+
+[reviewers.path_stability]
+group_by = ["task_family", "recommended_path"]
+min_consistency_ratio = 0.7

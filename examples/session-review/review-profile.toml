@@ -1,0 +1,21 @@
+[project]
+name = "example-project"
+codex_home = "~/.codex"
+output_dir = ".codex-local/session-review"
+
+[safety]
+include_raw_text = false
+hash_identifiers = true
+max_export_sensitivity = "S1"
+default_ttl_days = 30
+
+[reviewers]
+enabled = ["mcp_efficacy", "skill_utility", "subagent_value", "shell_fallback", "path_stability"]
+
+[thresholds]
+min_cases_for_proposal = 3
+min_cases_for_staged = 6
+max_secret_leak_count = 0
+
+[promotion]
+targets = ["mcp_tool", "skill", "subagent_pattern", "debug_runbook_seed"]
