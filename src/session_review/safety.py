@@ -31,6 +31,13 @@ def summarize_text(value: object, *, max_chars: int = MAX_SUMMARY_CHARS) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
+def summarize_sensitive_text(value: object, *, include_raw_text: bool = False) -> dict[str, Any]:
+    text = str(value or "")
+    if include_raw_text:
+        return {"text_preview": summarize_text(text), "char_count": len(text)}
+    return {"text_hash": stable_hash(text), "char_count": len(text)}
+
+
 def classify_key_value(key: str, value: object) -> SensitivityLevel:
     if SECRET_KEY_RE.search(key):
         return SensitivityLevel.S3

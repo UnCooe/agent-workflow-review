@@ -1,5 +1,6 @@
 [project]
 name = "example-project"
+root = "."
 codex_home = "~/.codex"
 output_dir = ".codex-local/session-review"
 

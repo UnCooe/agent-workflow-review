@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,11 +53,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="session-review")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    init = sub.add_parser("init", help="Create a project-local .session-review workspace.")
+    init.add_argument("--target", default=".")
+    init.set_defaults(func=cmd_init)
+
     review = sub.add_parser("review", help="Parse Codex JSONL and produce packets/report/artifact.")
     review.add_argument("--profile", default=None)
     review.add_argument("--reviewer-pack", default=None)
     review.add_argument("--since-days", type=int, default=7)
     review.add_argument("--session", action="append", default=[], help="Explicit Codex session JSONL path.")
+    review.add_argument("--session-glob", default=None, help="Glob for session JSONL files.")
+    review.add_argument("--project-root", default=None)
     review.add_argument("--output-dir", default=None)
     review.set_defaults(func=cmd_review)
 
@@ -76,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
     decide.add_argument("--reviewer", default="manual")
     decide.set_defaults(func=cmd_decide)
 
+    list_candidates = sub.add_parser("list-candidates", help="List extracted improvement candidates.")
+    list_candidates.add_argument("--candidates", default=".codex-local/session-review/improvement-candidates.json")
+    list_candidates.add_argument("--format", choices=["table", "json"], default="table")
+    list_candidates.set_defaults(func=cmd_list_candidates)
+
     export = sub.add_parser("export", help="Export a manually staged/promoted debug_runbook_seed.")
     export.add_argument("--candidates", default=".codex-local/session-review/improvement-candidates.json")
     export.add_argument("--decisions", default=None)
@@ -84,6 +96,20 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--output", default=None)
     export.set_defaults(func=cmd_export)
     return parser
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    target = Path(args.target).expanduser()
+    review_dir = target / ".session-review"
+    output_dir = review_dir / "output"
+    exports_dir = review_dir / "exports"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    _write_text_if_missing(review_dir / "review-profile.toml", _default_profile_toml())
+    _write_text_if_missing(review_dir / "reviewer-pack.toml", _default_reviewer_pack_toml())
+    _write_text_if_missing(review_dir / ".gitignore", "output/\nexports/\n*.json\n*.md\n*.yaml\n")
+    return 0
 
 
 def cmd_review(args: argparse.Namespace) -> int:
@@ -95,12 +121,25 @@ def cmd_review(args: argparse.Namespace) -> int:
     output_dir = _output_dir(profile, args.output_dir)
 
     session_paths = [Path(item).expanduser() for item in args.session]
+    if args.session_glob:
+        session_paths.extend(Path(item).expanduser() for item in sorted(glob.glob(args.session_glob, recursive=True)))
     if not session_paths:
         session_paths = list(
             iter_recent_session_files(Path(profile.project.codex_home), since_days=args.since_days)
         )
+    project_root = _project_root(
+        args.project_root,
+        profile,
+        profile_path=profile_path,
+        enforce_default=not args.session,
+    )
 
-    parsed = parse_session_files(session_paths, safety=safety, reviewer_pack=reviewer_pack)
+    parsed = parse_session_files(
+        session_paths,
+        safety=safety,
+        reviewer_pack=reviewer_pack,
+        project_root=project_root,
+    )
     packets = packets_from_cases(parsed.cases)
     findings = run_reviewers(
         cases=parsed.cases,
@@ -165,7 +204,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         {
             "schema_version": SCHEMA_CANDIDATES,
             "generated_at": _now(),
-            "source_packets": str(packet_path),
+            "source_packets_ref": {"file_hash": stable_hash(str(packet_path)), "suffix": packet_path.suffix},
             "candidates": _dump_models(candidates),
         },
     )
@@ -173,6 +212,17 @@ def cmd_extract(args: argparse.Namespace) -> int:
         render_candidates_markdown(candidates),
         encoding="utf-8",
     )
+    return 0
+
+
+def cmd_list_candidates(args: argparse.Namespace) -> int:
+    candidate_path = Path(args.candidates).expanduser()
+    payload = _read_json(candidate_path)
+    candidates = [ImprovementCandidate.model_validate(item) for item in payload.get("candidates", [])]
+    if args.format == "json":
+        print(json.dumps(_dump_models(candidates), ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    print(_render_candidate_table(candidates))
     return 0
 
 
@@ -241,6 +291,24 @@ def _output_dir(profile: ReviewProfile, override: str | None) -> Path:
     return Path(raw).expanduser()
 
 
+def _project_root(
+    raw: str | None,
+    profile: ReviewProfile,
+    *,
+    profile_path: Path | None,
+    enforce_default: bool,
+) -> Path | None:
+    if raw:
+        return Path(raw).expanduser()
+    if profile.project.root:
+        root = Path(profile.project.root).expanduser()
+        if root.is_absolute() or profile_path is None:
+            return root
+        base = profile_path.parent.parent if profile_path.parent.name == ".session-review" else profile_path.parent
+        return base / root
+    return Path.cwd() if enforce_default else None
+
+
 def _load_profile_for_extract(raw: str | None, payload: dict[str, Any]) -> ReviewProfile:
     profile_path = raw or payload.get("profile_path")
     if profile_path and Path(str(profile_path)).expanduser().exists():
@@ -278,6 +346,96 @@ def _dump_models(items: list[Any]) -> list[dict[str, Any]]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _write_text_if_missing(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    path.write_text(text, encoding="utf-8")
+
+
+def _render_candidate_table(candidates: list[ImprovementCandidate]) -> str:
+    headers = [
+        "candidate_id",
+        "target_type",
+        "maturity",
+        "export_allowed",
+        "score",
+        "support",
+        "problem_pattern",
+    ]
+    rows = [
+        [
+            candidate.candidate_id,
+            str(candidate.target_type),
+            str(candidate.maturity),
+            str(candidate.export_allowed).lower(),
+            ",".join(f"{key}={value}" for key, value in sorted(candidate.score.items())),
+            str(len(candidate.supporting_findings)),
+            candidate.problem_pattern,
+        ]
+        for candidate in candidates
+    ]
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows)) if rows else len(headers[index])
+        for index in range(len(headers))
+    ]
+    lines = ["  ".join(headers[index].ljust(widths[index]) for index in range(len(headers)))]
+    lines.append("  ".join("-" * width for width in widths))
+    lines.extend(
+        "  ".join(row[index].ljust(widths[index]) for index in range(len(headers)))
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+def _default_profile_toml() -> str:
+    return """[project]
+name = "session-review"
+root = "."
+codex_home = "~/.codex"
+output_dir = ".session-review/output"
+
+[safety]
+include_raw_text = false
+hash_identifiers = true
+max_export_sensitivity = "S1"
+default_ttl_days = 30
+
+[reviewers]
+enabled = ["mcp_efficacy", "skill_utility", "subagent_value", "shell_fallback", "path_stability"]
+
+[thresholds]
+min_cases_for_proposal = 3
+min_cases_for_staged = 6
+max_secret_leak_count = 0
+
+[promotion]
+targets = ["mcp_tool", "skill", "subagent_pattern", "debug_runbook_seed"]
+"""
+
+
+def _default_reviewer_pack_toml() -> str:
+    return """[pack]
+id = "default"
+version = "0.1.0"
+
+[tool_families]
+mcp = []
+shell = ["exec_command", "bash"]
+subagent = ["spawn_agent", "wait_agent", "close_agent"]
+skill = []
+
+[task_families.example]
+trigger_keywords = []
+preferred_route = "unknown"
+expected_data = ["evidence_ref"]
+
+[reviewers.path_stability]
+group_by = ["task_family", "recommended_path"]
+min_consistency_ratio = 0.7
+"""
 
 
 def _read_json(path: Path) -> dict[str, Any]:

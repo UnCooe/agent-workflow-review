@@ -18,7 +18,7 @@ from session_review.models import (
     SourceType,
     ToolFamily,
 )
-from session_review.safety import SafetyPolicy, max_sensitivity, stable_hash, summarize_text
+from session_review.safety import SafetyPolicy, max_sensitivity, stable_hash, summarize_sensitive_text, summarize_text
 
 
 @dataclass
@@ -33,10 +33,16 @@ def parse_session_files(
     *,
     safety: SafetyPolicy,
     reviewer_pack: ReviewerPack,
+    project_root: Path | None = None,
 ) -> ParseResult:
     result = ParseResult()
     for path in paths:
-        parsed = parse_session_file(path, safety=safety, reviewer_pack=reviewer_pack)
+        parsed = parse_session_file(
+            path,
+            safety=safety,
+            reviewer_pack=reviewer_pack,
+            project_root=project_root,
+        )
         result.cases.extend(parsed.cases)
         result.parser_warnings.extend(parsed.parser_warnings)
         result.redaction_warnings.extend(parsed.redaction_warnings)
@@ -49,24 +55,30 @@ def parse_session_file(
     *,
     safety: SafetyPolicy,
     reviewer_pack: ReviewerPack,
+    project_root: Path | None = None,
 ) -> ParseResult:
     result = ParseResult()
-    session_id = path.stem
+    session_id = stable_hash(("session_path", path.stem))
     cwd_hash: str | None = None
+    cwd_value: str | None = None
+    project_match: bool | None = _matches_project(path=path, cwd=None, project_root=project_root)
     turn_index = -1
     current: _CaseBuilder | None = None
     pending_tools: dict[str, tuple[str, ToolFamily]] = {}
 
     for line_no, record in iter_json_records(path):
         if not isinstance(record, dict):
-            result.parser_warnings.append(f"{path}:{line_no}: non-object JSON record")
+            result.parser_warnings.append(f"{_path_label(path)}:{line_no}: non-object JSON record")
             continue
         timestamp = _parse_timestamp(record.get("timestamp") or record.get("created_at"))
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         if record.get("type") == "session_meta":
-            session_id = str(payload.get("id") or session_id)
+            if payload.get("id"):
+                session_id = stable_hash(("session_meta", payload.get("id")))
             if payload.get("cwd"):
-                cwd_hash = stable_hash(payload.get("cwd"))
+                cwd_value = str(payload.get("cwd"))
+                cwd_hash = stable_hash(cwd_value)
+                project_match = _matches_project(path=path, cwd=cwd_value, project_root=project_root)
             continue
 
         payload_type = payload.get("type")
@@ -94,14 +106,14 @@ def parse_session_file(
                 cwd_hash=cwd_hash,
                 kind=AgentEventKind.USER_MESSAGE,
                 tool_family=ToolFamily.OTHER,
-                text_summary=summarize_text(text),
+                text_summary=_text_summary(safety, text),
                 raw_ref=raw_ref,
                 safety_level=SensitivityLevel.S2,
             )
             current = _CaseBuilder(
                 session_id=session_id,
                 turn_index=turn_index,
-                user_goal_summary=summarize_text(text),
+                user_goal_summary=_text_summary(safety, text),
                 task_family=task_family,
                 expected_route=_route_mode(family_config.preferred_route),
                 expected_data=list(family_config.expected_data),
@@ -202,6 +214,17 @@ def parse_session_file(
 
     if current and current.events:
         result.cases.append(current.build())
+    if project_root is not None:
+        if project_match is False:
+            result.parser_warnings.append(
+                f"{_path_label(path)}: skipped session because cwd/path did not match project root"
+            )
+            result.cases = []
+        elif project_match is None:
+            result.parser_warnings.append(
+                f"{_path_label(path)}: skipped session because project ownership could not be confirmed"
+            )
+            result.cases = []
     result.redaction_warnings.extend(safety.redaction_warnings)
     return result
 
@@ -423,7 +446,7 @@ def _message_event(
         cwd_hash=cwd_hash,
         kind=AgentEventKind.ASSISTANT_MESSAGE,
         tool_family=ToolFamily.OTHER,
-        text_summary=summarize_text(text),
+        text_summary=_text_summary(safety, text),
         raw_ref=raw_ref,
         safety_level=SensitivityLevel.S2,
     )
@@ -431,6 +454,36 @@ def _message_event(
 
 def _event_id(session_id: str, line_no: int, suffix: str) -> str:
     return stable_hash((session_id, line_no, suffix))
+
+
+def _path_label(path: Path) -> str:
+    return f"session_file:{stable_hash(str(path))}"
+
+
+def _text_summary(safety: SafetyPolicy, text: str) -> str:
+    if safety.include_raw_text:
+        return summarize_text(text)
+    summary = summarize_sensitive_text(text, include_raw_text=False)
+    return f"text_hash:{summary['text_hash']};chars:{summary['char_count']}"
+
+
+def _matches_project(*, path: Path, cwd: str | None, project_root: Path | None) -> bool | None:
+    if project_root is None:
+        return None
+    root = project_root.expanduser().resolve()
+    try:
+        if path.expanduser().resolve().is_relative_to(root):
+            return True
+    except OSError:
+        pass
+    if not cwd:
+        return None
+    cwd_path = Path(cwd).expanduser()
+    if not cwd_path.is_absolute():
+        cwd_path = (Path.cwd() / cwd_path).resolve()
+    else:
+        cwd_path = cwd_path.resolve()
+    return cwd_path == root or cwd_path.is_relative_to(root)
 
 
 def _parse_timestamp(value: object) -> datetime | None:
