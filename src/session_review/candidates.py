@@ -164,7 +164,8 @@ def _candidate_from_group(
         for ref in finding.evidence_refs
         if _sensitivity(ref.sensitivity) == SensitivityLevel.S3
     )
-    if any(_finding_type(finding.type) == FindingType.PATH_STABILITY for finding in findings):
+    has_path_stability = any(_finding_type(finding.type) == FindingType.PATH_STABILITY for finding in findings)
+    if has_path_stability:
         support_count = max(len(finding.evidence_refs) for finding in findings)
     else:
         support_count = len(support_case_ids)
@@ -195,7 +196,7 @@ def _candidate_from_group(
         maturity=maturity,
         score={
             "coverage": min(100, support_count * 20),
-            "consistency": _consistency_score(path_counter, support_count),
+            "consistency": 100 if has_path_stability else _consistency_score(path_counter, support_count),
             "safety": 100 if secret_leaks == 0 else 0,
             "reuse": 80 if target == TargetType.DEBUG_RUNBOOK_SEED else 60,
         },

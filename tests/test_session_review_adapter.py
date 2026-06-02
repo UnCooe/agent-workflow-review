@@ -90,3 +90,68 @@ def test_codex_jsonl_parser_splits_user_turns_and_records_recovery_path(tmp_path
     assert "shell_fallback_after_mcp" in first.recovery_path
     assert "mcp_after_shell" in first.recovery_path
     assert all("file_hash" in ref.locator for ref in first.raw_refs)
+    assert "帮我确认" not in first.user_goal_summary
+    assert "text_hash:" in first.user_goal_summary
+
+
+def test_project_root_filter_skips_unmatched_or_unknown_sessions(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    matched_session = tmp_path / "matched.jsonl"
+    unmatched_session = tmp_path / "unmatched.jsonl"
+    unknown_session = tmp_path / "unknown.jsonl"
+    _write_session(matched_session, cwd=str(project_root))
+    _write_session(unmatched_session, cwd=str(outside))
+    _write_session(unknown_session, cwd=None)
+    pack = ReviewerPack.model_validate({"tool_families": {"mcp": ["inspect_request"]}})
+
+    matched = parse_session_file(
+        matched_session,
+        safety=SafetyPolicy(),
+        reviewer_pack=pack,
+        project_root=project_root,
+    )
+    unmatched = parse_session_file(
+        unmatched_session,
+        safety=SafetyPolicy(),
+        reviewer_pack=pack,
+        project_root=project_root,
+    )
+    unknown = parse_session_file(
+        unknown_session,
+        safety=SafetyPolicy(),
+        reviewer_pack=pack,
+        project_root=project_root,
+    )
+
+    assert len(matched.cases) == 1
+    assert unmatched.cases == []
+    assert unknown.cases == []
+    assert "did not match project root" in unmatched.parser_warnings[0]
+    assert "could not be confirmed" in unknown.parser_warnings[0]
+
+
+def _write_session(path: Path, *, cwd: str | None) -> None:
+    records = []
+    if cwd is not None:
+        records.append({"type": "session_meta", "payload": {"id": path.stem, "cwd": cwd}})
+    records.extend(
+        [
+            {"payload": {"type": "message", "role": "user", "content": "Confirm provider"}},
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "inspect_request",
+                    "call_id": "mcp-1",
+                    "arguments": json.dumps({"request_id": "req-1"}),
+                }
+            },
+            {"payload": {"type": "function_call_output", "call_id": "mcp-1", "output": "{\"total\":1}"}},
+        ]
+    )
+    path.write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records),
+        encoding="utf-8",
+    )

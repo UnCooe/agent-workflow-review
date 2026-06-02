@@ -1,0 +1,13 @@
+{"type":"session_meta","payload":{"id":"redacted-session","cwd":"examples/session-review"}}
+{"payload":{"type":"message","role":"user","content":"Confirm provider routing for redacted request alpha."}}
+{"payload":{"type":"function_call","name":"inspect_request","call_id":"mcp-1","arguments":"{\"request_id\":\"req-alpha\",\"text_snippet\":\"redacted input text\"}"}}
+{"payload":{"type":"function_call_output","call_id":"mcp-1","output":"{\"total\":1,\"provider\":\"example-provider\",\"route_reason\":\"matched configured voice\",\"role_voice_lang\":\"en\",\"evidence_ref\":\"ref-alpha\"}"}}
+{"payload":{"type":"message","role":"assistant","content":"confirmed provider routing with evidence."}}
+{"payload":{"type":"message","role":"user","content":"Confirm provider routing for redacted request beta."}}
+{"payload":{"type":"function_call","name":"inspect_request","call_id":"mcp-2","arguments":"{\"request_id\":\"req-beta\",\"text_snippet\":\"redacted input text\"}"}}
+{"payload":{"type":"function_call_output","call_id":"mcp-2","output":"{\"total\":1,\"provider\":\"example-provider\",\"route_reason\":\"matched configured voice\",\"role_voice_lang\":\"en\",\"evidence_ref\":\"ref-beta\"}"}}
+{"payload":{"type":"message","role":"assistant","content":"confirmed provider routing with evidence."}}
+{"payload":{"type":"message","role":"user","content":"Confirm provider routing for redacted request gamma."}}
+{"payload":{"type":"function_call","name":"inspect_request","call_id":"mcp-3","arguments":"{\"request_id\":\"req-gamma\",\"text_snippet\":\"redacted input text\"}"}}
+{"payload":{"type":"function_call_output","call_id":"mcp-3","output":"{\"total\":1,\"provider\":\"example-provider\",\"route_reason\":\"matched configured voice\",\"role_voice_lang\":\"en\",\"evidence_ref\":\"ref-gamma\"}"}}
+{"payload":{"type":"message","role":"assistant","content":"confirmed provider routing with evidence."}}

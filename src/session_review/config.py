@@ -11,6 +11,7 @@ class ProjectConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str = "session-review"
+    root: str | None = None
     codex_home: str = "~/.codex"
     output_dir: str = ".codex-local/session-review"
 
