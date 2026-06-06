@@ -35,12 +35,21 @@ from session_review.safety import SafetyPolicy, stable_hash
 from session_review.subject.collectors import collect_subject_episodes
 from session_review.subject.config import (
     dump_default_objective,
+    dump_default_signal_pack,
     dump_default_subject,
     load_subject_pack,
+    load_signal_pack,
     subject_dir,
 )
+from session_review.subject.discriminators import discriminate_subject_episodes
 from session_review.subject.exporters import render_subject_candidate_export
-from session_review.subject.models import SubjectEpisode, SubjectFinding, SubjectImprovementCandidate
+from session_review.subject.models import (
+    AttributionHint,
+    ReviewCollision,
+    SubjectEpisode,
+    SubjectFinding,
+    SubjectImprovementCandidate,
+)
 from session_review.subject.prompts import write_prompts
 from session_review.subject.review import (
     render_subject_candidates_table,
@@ -54,6 +63,11 @@ SCHEMA_DECISIONS = "session_review.decisions.v0"
 SCHEMA_SUBJECT_EPISODES = "session_review.subject_episodes.v0"
 SCHEMA_SUBJECT_FINDINGS = "session_review.subject_findings.v0"
 SCHEMA_SUBJECT_CANDIDATES = "session_review.subject_candidates.v0"
+SCHEMA_SUBJECT_DISCRIMINATED_EPISODES = "session_review.subject_discriminated_episodes.v0_2"
+SCHEMA_SUBJECT_FINDINGS_V02 = "session_review.subject_findings.v0_2"
+SCHEMA_SUBJECT_CANDIDATES_V02 = "session_review.subject_candidates.v0_2"
+SCHEMA_SUBJECT_ATTRIBUTION = "session_review.subject_attribution.v0_2"
+SCHEMA_SUBJECT_COLLISIONS = "session_review.subject_collisions.v0_2"
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -136,12 +150,36 @@ def build_parser() -> argparse.ArgumentParser:
     subject_collect.add_argument("--since-hours", type=int, default=24)
     subject_collect.add_argument("--session", action="append", default=[])
     subject_collect.add_argument("--session-glob", default=None)
+    subject_collect.add_argument("--signal-pack", default=None)
+    subject_collect.add_argument("--include-proposed-signal-pack", action="store_true")
     subject_collect.set_defaults(func=cmd_subject_collect)
+
+    subject_validate = subject_sub.add_parser("validate-signals", help="Validate a subject signal pack.")
+    subject_validate.add_argument("subject_id")
+    subject_validate.add_argument("--target", default=".")
+    subject_validate.add_argument("--signal-pack", default=None)
+    subject_validate.set_defaults(func=cmd_subject_validate_signals)
+
+    subject_discriminate = subject_sub.add_parser(
+        "discriminate",
+        help="Apply domain discrimination to collected subject episodes.",
+    )
+    subject_discriminate.add_argument("subject_id")
+    subject_discriminate.add_argument("--target", default=".")
+    subject_discriminate.add_argument("--episodes", default=None)
+    subject_discriminate.add_argument("--signal-pack", default=None)
+    subject_discriminate.add_argument("--include-proposed-signal-pack", action="store_true")
+    subject_discriminate.set_defaults(func=cmd_subject_discriminate)
 
     subject_review = subject_sub.add_parser("review", help="Review collected subject episodes.")
     subject_review.add_argument("subject_id")
     subject_review.add_argument("--target", default=".")
     subject_review.add_argument("--episodes", default=None)
+    subject_review.add_argument("--discriminated-episodes", default=None)
+    subject_review.add_argument("--collisions", default=None)
+    subject_review.add_argument("--signal-pack", default=None)
+    subject_review.add_argument("--include-proposed-signal-pack", action="store_true")
+    subject_review.add_argument("--with-collision", action="store_true")
     subject_review.set_defaults(func=cmd_subject_review)
 
     subject_list = subject_sub.add_parser("list-candidates", help="List subject improvement candidates.")
@@ -338,6 +376,7 @@ def cmd_subject_init(args: argparse.Namespace) -> int:
     (base / "exports").mkdir(parents=True, exist_ok=True)
     _write_text_if_missing(base / "subject.toml", dump_default_subject(args.subject_id))
     _write_text_if_missing(base / "objective.toml", dump_default_objective())
+    _write_text_if_missing(base / "signal-pack.toml", dump_default_signal_pack(args.subject_id))
     write_prompts(base, args.subject_id, tool_roots=[], skill_paths=[], mcp_schemas=[])
     return 0
 
@@ -349,6 +388,7 @@ def cmd_subject_scaffold(args: argparse.Namespace) -> int:
         (base / "exports").mkdir(parents=True, exist_ok=True)
         _write_text_if_missing(base / "subject.toml", dump_default_subject(args.subject_id))
         _write_text_if_missing(base / "objective.toml", dump_default_objective())
+        _write_text_if_missing(base / "signal-pack.toml", dump_default_signal_pack(args.subject_id))
     write_prompts(
         base,
         args.subject_id,
@@ -361,7 +401,11 @@ def cmd_subject_scaffold(args: argparse.Namespace) -> int:
 
 def cmd_subject_collect(args: argparse.Namespace) -> int:
     base = subject_dir(args.target, args.subject_id)
-    pack = load_subject_pack(base)
+    pack = load_subject_pack(
+        base,
+        signal_pack_path=args.signal_pack,
+        include_proposed_signal_pack=args.include_proposed_signal_pack,
+    )
     session_paths = _subject_session_paths(args)
     safety = SafetyPolicy(include_raw_text=False, hash_identifiers=True)
     result = collect_subject_episodes(session_paths, pack=pack, safety=safety)
@@ -394,18 +438,118 @@ def cmd_subject_collect(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_subject_review(args: argparse.Namespace) -> int:
+def cmd_subject_validate_signals(args: argparse.Namespace) -> int:
     base = subject_dir(args.target, args.subject_id)
-    pack = load_subject_pack(base)
+    signal_path = Path(args.signal_pack).expanduser() if args.signal_pack else base / "signal-pack.toml"
+    signal_pack = load_signal_pack(signal_path)
+    warnings: list[str] = []
+    positives = (
+        signal_pack.positive_signals.tool_names
+        + signal_pack.positive_signals.commands
+        + signal_pack.positive_signals.skill_names
+        + signal_pack.positive_signals.mcp_names
+        + signal_pack.positive_signals.subagent_names
+        + signal_pack.positive_signals.text
+        + signal_pack.positive_signals.error_signals
+        + signal_pack.positive_signals.user_hint_signals
+    )
+    negatives = (
+        signal_pack.negative_signals.exclude_contexts
+        + signal_pack.negative_signals.commands
+        + signal_pack.negative_signals.text
+    )
+    if not positives:
+        warnings.append("no_positive_signals")
+    if signal_pack.ambiguous_terms.terms and not (
+        signal_pack.domain_anchors.required_any or signal_pack.domain_anchors.required_all
+    ):
+        warnings.append("ambiguous_terms_without_required_any_domain_anchor")
+    if positives and not negatives and signal_pack.ambiguous_terms.terms:
+        warnings.append("ambiguous_terms_without_negative_signals")
+    payload = {
+        "schema_version": "session_review.subject_signal_pack_validation.v0_2",
+        "generated_at": _now(),
+        "subject_id": args.subject_id,
+        "signal_pack_ref": {
+            "id": signal_pack.pack.id,
+            "version": signal_pack.pack.version,
+            "generated_by": signal_pack.pack.generated_by,
+            "status": signal_pack.pack.status,
+            "content_hash": stable_hash(signal_pack.model_dump(mode="json")),
+        },
+        "signal_counts": {
+            "positive": len(positives),
+            "negative": len(negatives),
+            "domain_required_any": len(signal_pack.domain_anchors.required_any),
+            "domain_required_all": len(signal_pack.domain_anchors.required_all),
+            "ambiguous_terms": len(signal_pack.ambiguous_terms.terms),
+        },
+        "warnings": warnings,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_subject_discriminate(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    pack = load_subject_pack(
+        base,
+        signal_pack_path=args.signal_pack,
+        include_proposed_signal_pack=args.include_proposed_signal_pack,
+    )
     episode_path = Path(args.episodes).expanduser() if args.episodes else base / "output" / "subject-episodes.json"
     payload = _read_json(episode_path)
     episodes = [SubjectEpisode.model_validate(item) for item in payload.get("episodes", [])]
-    findings, candidates, report = review_subject_episodes(episodes, pack=pack)
+    discriminated, hints, collisions, report = discriminate_subject_episodes(episodes, pack=pack)
+    output_dir = base / "output"
+    _write_json(
+        output_dir / "subject-discriminated-episodes.json",
+        {
+            "schema_version": SCHEMA_SUBJECT_DISCRIMINATED_EPISODES,
+            "generated_at": _now(),
+            "subject_id": args.subject_id,
+            "episodes": _dump_models(discriminated),
+        },
+    )
+    _write_json(
+        output_dir / "subject-attribution-hints.json",
+        {
+            "schema_version": SCHEMA_SUBJECT_ATTRIBUTION,
+            "generated_at": _now(),
+            "subject_id": args.subject_id,
+            "attribution_hints": _dump_models(hints),
+        },
+    )
+    _write_json(
+        output_dir / "subject-collisions.json",
+        {
+            "schema_version": SCHEMA_SUBJECT_COLLISIONS,
+            "generated_at": _now(),
+            "subject_id": args.subject_id,
+            "collisions": _dump_models(collisions),
+        },
+    )
+    (output_dir / "subject-discrimination-report.md").write_text(report, encoding="utf-8")
+    return 0
+
+
+def cmd_subject_review(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    pack = load_subject_pack(
+        base,
+        signal_pack_path=args.signal_pack,
+        include_proposed_signal_pack=args.include_proposed_signal_pack,
+    )
+    episode_path = _subject_review_episode_path(args, base)
+    payload = _read_json(episode_path)
+    episodes = [SubjectEpisode.model_validate(item) for item in payload.get("episodes", [])]
+    collisions = _subject_review_collisions(args, base)
+    findings, candidates, report = review_subject_episodes(episodes, pack=pack, collisions=collisions)
     output_dir = base / "output"
     _write_json(
         output_dir / "subject-findings.json",
         {
-            "schema_version": SCHEMA_SUBJECT_FINDINGS,
+            "schema_version": SCHEMA_SUBJECT_FINDINGS_V02,
             "generated_at": _now(),
             "subject_id": args.subject_id,
             "findings": _dump_models(findings),
@@ -414,7 +558,7 @@ def cmd_subject_review(args: argparse.Namespace) -> int:
     _write_json(
         output_dir / "subject-improvement-candidates.json",
         {
-            "schema_version": SCHEMA_SUBJECT_CANDIDATES,
+            "schema_version": SCHEMA_SUBJECT_CANDIDATES_V02,
             "generated_at": _now(),
             "subject_id": args.subject_id,
             "candidates": _dump_models(candidates),
@@ -502,6 +646,28 @@ def _subject_session_paths(args: argparse.Namespace) -> list[Path]:
     if not sessions.exists():
         return []
     return [path for path in sorted(sessions.glob("**/*.jsonl")) if path.stat().st_mtime >= cutoff]
+
+
+def _subject_review_episode_path(args: argparse.Namespace, base: Path) -> Path:
+    if args.discriminated_episodes:
+        return Path(args.discriminated_episodes).expanduser()
+    if args.episodes:
+        return Path(args.episodes).expanduser()
+    if args.with_collision and (base / "output" / "subject-discriminated-episodes.json").exists():
+        return base / "output" / "subject-discriminated-episodes.json"
+    return base / "output" / "subject-episodes.json"
+
+
+def _subject_review_collisions(args: argparse.Namespace, base: Path) -> list[ReviewCollision]:
+    path: Path | None = None
+    if args.collisions:
+        path = Path(args.collisions).expanduser()
+    elif args.with_collision and (base / "output" / "subject-collisions.json").exists():
+        path = base / "output" / "subject-collisions.json"
+    if path is None:
+        return []
+    payload = _read_json(path)
+    return [ReviewCollision.model_validate(item) for item in payload.get("collisions", [])]
 
 
 def _render_subject_collect_summary(

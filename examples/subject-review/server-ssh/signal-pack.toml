@@ -1,0 +1,29 @@
+[pack]
+id = "server-ssh-signals"
+version = "0.2.0"
+generated_by = "codex"
+status = "reviewed"
+source_refs = ["redacted-fixture"]
+
+[positive_signals]
+tool_names = []
+commands = ["ssh ops@", "scp deploy@"]
+skill_names = []
+mcp_names = []
+subagent_names = []
+text = ["server host", "remote host", "journalctl", "systemctl"]
+error_signals = ["kex_exchange_identification", "connection reset", "timeout"]
+user_hint_signals = ["server", "remote host"]
+
+[domain_anchors]
+required_any = ["ops@", "deploy@", "server host", "journalctl", "systemctl", "remote host"]
+required_all = []
+
+[negative_signals]
+exclude_contexts = ["git@github.com", "git remote", "git push", "git fetch", "ssh -T"]
+commands = ["git push", "git fetch", "ssh -T git@"]
+text = ["GitHub", "repository remote"]
+
+[ambiguous_terms]
+terms = ["ssh", "timeout", "permission denied"]
+require_domain_anchor = true

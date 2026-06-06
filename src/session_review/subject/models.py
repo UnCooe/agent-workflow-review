@@ -38,6 +38,122 @@ class SubjectFindingType(StrEnum):
     INTERFACE_FRICTION = "interface_friction"
     REPEATED_FAILURE_MODE = "repeated_failure_mode"
     ACCIDENTAL_NOISE = "accidental_noise"
+    WRONG_DOMAIN_CLASSIFICATION = "wrong_domain_classification"
+    FALSE_POSITIVE_SUBJECT_NEED = "false_positive_subject_need"
+    MISSED_DOMAIN_DISCRIMINATOR = "missed_domain_discriminator"
+    AMBIGUOUS_CONNECTION_FAILURE = "ambiguous_connection_failure"
+    SUBJECT_OVERGENERALIZED = "subject_overgeneralized"
+    COLLECTOR_OVER_RECALL = "collector_over_recall"
+    INSUFFICIENT_CONTEXT = "insufficient_context"
+
+
+class SignalPackStatus(StrEnum):
+    PROPOSED = "proposed"
+    REVIEWED = "reviewed"
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+
+
+class AttributionStatus(StrEnum):
+    CONFIRMED = "confirmed"
+    LIKELY = "likely"
+    AMBIGUOUS = "ambiguous"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+
+
+class EvidenceBasis(StrEnum):
+    DIRECT_USAGE = "direct_usage"
+    CONTEXTUAL_NEED = "contextual_need"
+    FALLBACK = "fallback"
+    MIXED = "mixed"
+    UNKNOWN = "unknown"
+
+
+class CollisionStatus(StrEnum):
+    AGREEMENT = "agreement"
+    DISAGREEMENT = "disagreement"
+    COMPETING_DOMAIN = "competing_domain"
+    INSUFFICIENT_CONTEXT = "insufficient_context"
+
+
+class SignalPackMeta(StrictSubjectModel):
+    id: str
+    version: str = "0.2.0"
+    generated_by: str = "manual"
+    status: SignalPackStatus = SignalPackStatus.PROPOSED
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class PositiveSignals(StrictSubjectModel):
+    tool_names: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list)
+    mcp_names: list[str] = Field(default_factory=list)
+    subagent_names: list[str] = Field(default_factory=list)
+    text: list[str] = Field(default_factory=list)
+    error_signals: list[str] = Field(default_factory=list)
+    user_hint_signals: list[str] = Field(default_factory=list)
+
+
+class DomainAnchors(StrictSubjectModel):
+    required_any: list[str] = Field(default_factory=list)
+    required_all: list[str] = Field(default_factory=list)
+
+
+class NegativeSignals(StrictSubjectModel):
+    exclude_contexts: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    text: list[str] = Field(default_factory=list)
+
+
+class AmbiguousTerms(StrictSubjectModel):
+    terms: list[str] = Field(default_factory=list)
+    require_domain_anchor: bool = True
+
+
+class SubjectSignalPack(StrictSubjectModel):
+    pack: SignalPackMeta
+    positive_signals: PositiveSignals = Field(default_factory=PositiveSignals)
+    domain_anchors: DomainAnchors = Field(default_factory=DomainAnchors)
+    negative_signals: NegativeSignals = Field(default_factory=NegativeSignals)
+    ambiguous_terms: AmbiguousTerms = Field(default_factory=AmbiguousTerms)
+
+
+class AttributionHint(StrictSubjectModel):
+    episode_id: str
+    subject_id: str
+    status: AttributionStatus = AttributionStatus.UNKNOWN
+    evidence_basis: EvidenceBasis = EvidenceBasis.UNKNOWN
+    confidence: str = "low"
+    reason_codes: list[str] = Field(default_factory=list)
+    signal_ids: list[str] = Field(default_factory=list)
+    domain_anchor_ids: list[str] = Field(default_factory=list)
+    negative_signal_ids: list[str] = Field(default_factory=list)
+    ambiguous_signal_ids: list[str] = Field(default_factory=list)
+    review_only: bool = True
+
+
+class ReviewerClaim(StrictSubjectModel):
+    reviewer_id: str
+    claim_type: str
+    episode_ids: list[str] = Field(default_factory=list)
+    attribution_status: AttributionStatus = AttributionStatus.UNKNOWN
+    evidence_basis: EvidenceBasis = EvidenceBasis.UNKNOWN
+    confidence: str = "low"
+    rationale: str
+    uncertainty: str = ""
+    competing_explanations: list[str] = Field(default_factory=list)
+
+
+class ReviewCollision(StrictSubjectModel):
+    collision_id: str
+    subject_id: str
+    episode_ids: list[str] = Field(default_factory=list)
+    status: CollisionStatus
+    claims: list[ReviewerClaim] = Field(default_factory=list)
+    resolution: str = "review_only"
+    reason_codes: list[str] = Field(default_factory=list)
 
 
 class ReviewSubject(StrictSubjectModel):
@@ -103,6 +219,7 @@ class SubjectReviewPack(StrictSubjectModel):
     objective: ReviewObjective = Field(default_factory=ReviewObjective)
     collectors: SubjectCollectorsConfig = Field(default_factory=SubjectCollectorsConfig)
     context_window: ContextWindowConfig = Field(default_factory=ContextWindowConfig)
+    signal_pack: SubjectSignalPack | None = None
 
 
 class SubjectEventSummary(StrictSubjectModel):
@@ -131,6 +248,8 @@ class SubjectEpisode(StrictSubjectModel):
     outcome_hint: str = "unknown"
     raw_refs: list[RawRef] = Field(default_factory=list)
     safety_summary: dict[str, Any] = Field(default_factory=dict)
+    attribution: AttributionHint | None = None
+    review_only: bool = False
 
 
 class SubjectFinding(StrictSubjectModel):
@@ -141,6 +260,11 @@ class SubjectFinding(StrictSubjectModel):
     episode_ids: list[str] = Field(default_factory=list)
     rationale: str
     target_type: SubjectCandidateTarget | None = None
+    attribution_status: AttributionStatus = AttributionStatus.UNKNOWN
+    evidence_basis: EvidenceBasis = EvidenceBasis.UNKNOWN
+    review_only: bool = False
+    uncertainty: str = ""
+    collision_ids: list[str] = Field(default_factory=list)
 
 
 class SubjectImprovementCandidate(StrictSubjectModel):
@@ -154,3 +278,5 @@ class SubjectImprovementCandidate(StrictSubjectModel):
     maturity: CandidateStatus = CandidateStatus.OBSERVED
     export_allowed: bool = False
     score: dict[str, int] = Field(default_factory=dict)
+    attribution_status: AttributionStatus = AttributionStatus.UNKNOWN
+    review_only: bool = False

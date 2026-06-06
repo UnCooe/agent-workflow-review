@@ -1,0 +1,22 @@
+[objective]
+objective_id = "server-ssh-review"
+questions = [
+  "When did Codex try a server SSH workflow?",
+  "When did SSH failures indicate a server connection workflow problem?",
+  "When was a Git SSH failure only a competing domain?"
+]
+expected_use_cases = ["server connection timeout", "remote host operation", "server shell access"]
+missed_use_signals = ["timeout", "connection reset", "kex_exchange_identification"]
+success_signals = ["connected", "remote host reachable", "systemctl", "journalctl"]
+failure_signals = ["timeout", "connection reset", "permission denied", "kex_exchange_identification"]
+candidate_targets = ["skill", "docs", "workflow_pattern"]
+
+[collectors.contextual_need]
+error_signals = ["timeout", "connection reset", "kex_exchange_identification", "permission denied"]
+slow_signals = ["slow", "timeout"]
+user_hint_signals = ["server", "host", "SSH"]
+
+[collectors.fallback]
+inefficient_tools = ["ssh", "scp"]
+retry_threshold = 2
+missing_direct_usage_penalty = false

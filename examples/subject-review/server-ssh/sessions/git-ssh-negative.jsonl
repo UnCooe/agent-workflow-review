@@ -1,0 +1,8 @@
+{"type":"session_meta","payload":{"id":"server-ssh-negative-git","cwd":"workspace/git-project"}}
+{"payload":{"type":"message","role":"user","content":"Git push over SSH is failing for this repository."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"git-1","arguments":"{\"cmd\":\"git remote -v\"}"}}
+{"payload":{"type":"function_call_output","call_id":"git-1","output":"origin git@github.com:example/redacted.git"}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"git-2","arguments":"{\"cmd\":\"ssh -T git@github.com\"}"}}
+{"payload":{"type":"function_call_output","call_id":"git-2","output":"Permission denied (publickey)."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"git-3","arguments":"{\"cmd\":\"git push origin main\"}"}}
+{"payload":{"type":"function_call_output","call_id":"git-3","output":"git@github.com: Permission denied (publickey)."}}
