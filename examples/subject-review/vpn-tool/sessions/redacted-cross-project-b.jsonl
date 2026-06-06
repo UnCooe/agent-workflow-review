@@ -1,0 +1,7 @@
+{"type":"session_meta","payload":{"id":"subject-redacted-b","cwd":"workspace/project-b"}}
+{"payload":{"type":"message","role":"user","content":"SSH is slow and keeps failing; maybe try VPN or another proxy region."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"ssh-1","arguments":"{\"cmd\":\"ssh redacted-host\"}"}}
+{"payload":{"type":"function_call_output","call_id":"ssh-1","output":"kex_exchange_identification: Connection closed by remote host"}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"ssh-2","arguments":"{\"cmd\":\"ssh redacted-host\"}"}}
+{"payload":{"type":"function_call_output","call_id":"ssh-2","output":"connection reset by peer after retry"}}
+{"payload":{"type":"message","role":"assistant","content":"The direct SSH path is still failing after retries."}}

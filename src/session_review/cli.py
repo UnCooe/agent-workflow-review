@@ -32,11 +32,28 @@ from session_review.packets import (
 )
 from session_review.reviewers import run_reviewers
 from session_review.safety import SafetyPolicy, stable_hash
+from session_review.subject.collectors import collect_subject_episodes
+from session_review.subject.config import (
+    dump_default_objective,
+    dump_default_subject,
+    load_subject_pack,
+    subject_dir,
+)
+from session_review.subject.exporters import render_subject_candidate_export
+from session_review.subject.models import SubjectEpisode, SubjectFinding, SubjectImprovementCandidate
+from session_review.subject.prompts import write_prompts
+from session_review.subject.review import (
+    render_subject_candidates_table,
+    review_subject_episodes,
+)
 
 
 SCHEMA_REVIEW = "session_review.review.v0"
 SCHEMA_CANDIDATES = "session_review.candidates.v0"
 SCHEMA_DECISIONS = "session_review.decisions.v0"
+SCHEMA_SUBJECT_EPISODES = "session_review.subject_episodes.v0"
+SCHEMA_SUBJECT_FINDINGS = "session_review.subject_findings.v0"
+SCHEMA_SUBJECT_CANDIDATES = "session_review.subject_candidates.v0"
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -95,6 +112,50 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--target", required=True, choices=["debug_runbook_seed"])
     export.add_argument("--output", default=None)
     export.set_defaults(func=cmd_export)
+
+    subject = sub.add_parser("subject", help="Run subject-scoped cross-project review.")
+    subject_sub = subject.add_subparsers(dest="subject_command", required=True)
+
+    subject_init = subject_sub.add_parser("init", help="Create a subject review workspace.")
+    subject_init.add_argument("subject_id")
+    subject_init.add_argument("--target", default=".")
+    subject_init.set_defaults(func=cmd_subject_init)
+
+    subject_scaffold = subject_sub.add_parser("scaffold", help="Generate subject scaffold prompts.")
+    subject_scaffold.add_argument("subject_id")
+    subject_scaffold.add_argument("--target", default=".")
+    subject_scaffold.add_argument("--tool-root", action="append", default=[])
+    subject_scaffold.add_argument("--skill-path", action="append", default=[])
+    subject_scaffold.add_argument("--mcp-schema", action="append", default=[])
+    subject_scaffold.set_defaults(func=cmd_subject_scaffold)
+
+    subject_collect = subject_sub.add_parser("collect", help="Collect subject episodes across sessions.")
+    subject_collect.add_argument("subject_id")
+    subject_collect.add_argument("--target", default=".")
+    subject_collect.add_argument("--all-projects", action="store_true")
+    subject_collect.add_argument("--since-hours", type=int, default=24)
+    subject_collect.add_argument("--session", action="append", default=[])
+    subject_collect.add_argument("--session-glob", default=None)
+    subject_collect.set_defaults(func=cmd_subject_collect)
+
+    subject_review = subject_sub.add_parser("review", help="Review collected subject episodes.")
+    subject_review.add_argument("subject_id")
+    subject_review.add_argument("--target", default=".")
+    subject_review.add_argument("--episodes", default=None)
+    subject_review.set_defaults(func=cmd_subject_review)
+
+    subject_list = subject_sub.add_parser("list-candidates", help="List subject improvement candidates.")
+    subject_list.add_argument("subject_id")
+    subject_list.add_argument("--target", default=".")
+    subject_list.add_argument("--format", choices=["table", "json"], default="table")
+    subject_list.set_defaults(func=cmd_subject_list_candidates)
+
+    subject_export = subject_sub.add_parser("export", help="Export a subject candidate review bundle.")
+    subject_export.add_argument("subject_id")
+    subject_export.add_argument("--target", default=".")
+    subject_export.add_argument("--candidate", required=True)
+    subject_export.add_argument("--output", default=None)
+    subject_export.set_defaults(func=cmd_subject_export)
     return parser
 
 
@@ -271,6 +332,124 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_subject_init(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    (base / "output").mkdir(parents=True, exist_ok=True)
+    (base / "exports").mkdir(parents=True, exist_ok=True)
+    _write_text_if_missing(base / "subject.toml", dump_default_subject(args.subject_id))
+    _write_text_if_missing(base / "objective.toml", dump_default_objective())
+    write_prompts(base, args.subject_id, tool_roots=[], skill_paths=[], mcp_schemas=[])
+    return 0
+
+
+def cmd_subject_scaffold(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    if not (base / "subject.toml").exists():
+        (base / "output").mkdir(parents=True, exist_ok=True)
+        (base / "exports").mkdir(parents=True, exist_ok=True)
+        _write_text_if_missing(base / "subject.toml", dump_default_subject(args.subject_id))
+        _write_text_if_missing(base / "objective.toml", dump_default_objective())
+    write_prompts(
+        base,
+        args.subject_id,
+        tool_roots=args.tool_root,
+        skill_paths=args.skill_path,
+        mcp_schemas=args.mcp_schema,
+    )
+    return 0
+
+
+def cmd_subject_collect(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    pack = load_subject_pack(base)
+    session_paths = _subject_session_paths(args)
+    safety = SafetyPolicy(include_raw_text=False, hash_identifiers=True)
+    result = collect_subject_episodes(session_paths, pack=pack, safety=safety)
+    output_dir = base / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": SCHEMA_SUBJECT_EPISODES,
+        "generated_at": _now(),
+        "subject_id": args.subject_id,
+        "session_files": len(session_paths),
+        "episodes": _dump_models(result.episodes),
+        "parser_warnings": result.parser_warnings,
+        "redaction_warnings": result.redaction_warnings,
+    }
+    _write_json(output_dir / "subject-episodes.json", payload)
+    (output_dir / "subject-collect-summary.md").write_text(
+        _render_subject_collect_summary(args.subject_id, result.episodes, result.parser_warnings),
+        encoding="utf-8",
+    )
+    _write_json(
+        output_dir / "subject-debug-artifact.json",
+        {
+            "schema_version": "session_review.subject_debug_artifact.v0",
+            "subject_id": args.subject_id,
+            "episodes": _dump_models(result.episodes),
+            "parser_warnings": result.parser_warnings,
+            "redaction_warnings": result.redaction_warnings,
+        },
+    )
+    return 0
+
+
+def cmd_subject_review(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    pack = load_subject_pack(base)
+    episode_path = Path(args.episodes).expanduser() if args.episodes else base / "output" / "subject-episodes.json"
+    payload = _read_json(episode_path)
+    episodes = [SubjectEpisode.model_validate(item) for item in payload.get("episodes", [])]
+    findings, candidates, report = review_subject_episodes(episodes, pack=pack)
+    output_dir = base / "output"
+    _write_json(
+        output_dir / "subject-findings.json",
+        {
+            "schema_version": SCHEMA_SUBJECT_FINDINGS,
+            "generated_at": _now(),
+            "subject_id": args.subject_id,
+            "findings": _dump_models(findings),
+        },
+    )
+    _write_json(
+        output_dir / "subject-improvement-candidates.json",
+        {
+            "schema_version": SCHEMA_SUBJECT_CANDIDATES,
+            "generated_at": _now(),
+            "subject_id": args.subject_id,
+            "candidates": _dump_models(candidates),
+        },
+    )
+    (output_dir / "subject-review-report.md").write_text(report, encoding="utf-8")
+    return 0
+
+
+def cmd_subject_list_candidates(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    path = base / "output" / "subject-improvement-candidates.json"
+    payload = _read_json(path)
+    candidates = [SubjectImprovementCandidate.model_validate(item) for item in payload.get("candidates", [])]
+    if args.format == "json":
+        print(json.dumps(_dump_models(candidates), ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    print(render_subject_candidates_table(candidates))
+    return 0
+
+
+def cmd_subject_export(args: argparse.Namespace) -> int:
+    base = subject_dir(args.target, args.subject_id)
+    payload = _read_json(base / "output" / "subject-improvement-candidates.json")
+    candidates = [SubjectImprovementCandidate.model_validate(item) for item in payload.get("candidates", [])]
+    by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    candidate = by_id.get(args.candidate)
+    if candidate is None:
+        raise SystemExit(f"Unknown subject candidate: {args.candidate}")
+    output = Path(args.output).expanduser() if args.output else base / "exports" / f"{candidate.candidate_id}.yaml"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_subject_candidate_export(candidate), encoding="utf-8")
+    return 0
+
+
 def _resolve_reviewer_pack_path(raw: str | None, profile_path: Path | None) -> Path | None:
     if raw:
         return Path(raw).expanduser()
@@ -307,6 +486,45 @@ def _project_root(
         base = profile_path.parent.parent if profile_path.parent.name == ".session-review" else profile_path.parent
         return base / root
     return Path.cwd() if enforce_default else None
+
+
+def _subject_session_paths(args: argparse.Namespace) -> list[Path]:
+    paths = [Path(item).expanduser() for item in args.session]
+    if args.session_glob:
+        paths.extend(Path(item).expanduser() for item in sorted(glob.glob(args.session_glob, recursive=True)))
+    if paths:
+        return paths
+    if not args.all_projects:
+        raise SystemExit("subject collect requires --session/--session-glob or explicit --all-projects")
+    codex_home = Path("~/.codex").expanduser()
+    cutoff = datetime.now(timezone.utc).timestamp() - args.since_hours * 3600
+    sessions = codex_home / "sessions"
+    if not sessions.exists():
+        return []
+    return [path for path in sorted(sessions.glob("**/*.jsonl")) if path.stat().st_mtime >= cutoff]
+
+
+def _render_subject_collect_summary(
+    subject_id: str,
+    episodes: list[SubjectEpisode],
+    warnings: list[str],
+) -> str:
+    lines = [
+        "# Subject Collect Summary",
+        "",
+        f"- subject: `{subject_id}`",
+        f"- episodes: {len(episodes)}",
+        f"- parser_warnings: {len(warnings)}",
+        "",
+    ]
+    if episodes:
+        lines.append("## Episodes")
+        for episode in episodes:
+            lines.append(
+                f"- `{episode.episode_id}` score={episode.relevance_score} "
+                f"signals={','.join(episode.matched_signals)} outcome={episode.outcome_hint}"
+            )
+    return "\n".join(lines) + "\n"
 
 
 def _load_profile_for_extract(raw: str | None, payload: dict[str, Any]) -> ReviewProfile:
