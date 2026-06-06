@@ -1,0 +1,8 @@
+{"type":"session_meta","payload":{"id":"subject-redacted-a","cwd":"workspace/project-a"}}
+{"payload":{"type":"message","role":"user","content":"Server connection is timing out from this project."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"shell-1","arguments":"{\"cmd\":\"ssh redacted-host\"}"}}
+{"payload":{"type":"function_call_output","call_id":"shell-1","output":"ssh: connect to host redacted-host port 22: timeout"}}
+{"payload":{"type":"message","role":"assistant","content":"I will switch region using the proxy helper."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"vpn-1","arguments":"{\"cmd\":\"netctl region test --target redacted-host\"}"}}
+{"payload":{"type":"function_call_output","call_id":"vpn-1","output":"success: connected through alternate region"}}
+{"payload":{"type":"message","role":"assistant","content":"Connection is reachable after switching region."}}

@@ -1,0 +1,16 @@
+{
+  "note": "Exact ids are stable hashes and may differ if fixture paths change.",
+  "expected": {
+    "episode_count": 2,
+    "required_signals": [
+      "direct_usage",
+      "missed_opportunity",
+      "fallback:repeated_inefficient_path"
+    ],
+    "required_outcomes": [
+      "improved",
+      "failed_or_retried"
+    ],
+    "raw_text_policy": "No raw prompt, cwd path, command path, or output text should appear."
+  }
+}

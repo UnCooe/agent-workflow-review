@@ -1,0 +1,23 @@
+[objective]
+objective_id = "vpn-tool-review"
+questions = [
+  "When did Codex use the VPN/proxy tool?",
+  "When should Codex have used it but did not?",
+  "Did usage improve connection outcomes?",
+  "Should the CLI, skill, or docs change?"
+]
+expected_use_cases = ["server connection timeout", "slow SSH", "regional access failure"]
+missed_use_signals = ["timeout", "connection reset", "kex_exchange_identification", "proxy", "region"]
+success_signals = ["connected", "success", "reachable", "resolved"]
+failure_signals = ["timeout", "failed", "connection reset", "retry"]
+candidate_targets = ["tool_interface", "skill", "docs", "workflow_pattern"]
+
+[collectors.contextual_need]
+error_signals = ["timeout", "connection reset", "connection refused", "kex_exchange_identification"]
+slow_signals = ["slow", "latency", "很慢", "timeout"]
+user_hint_signals = ["VPN", "proxy", "region", "换节点"]
+
+[collectors.fallback]
+inefficient_tools = ["ssh", "curl", "ping"]
+retry_threshold = 2
+missing_direct_usage_penalty = true
