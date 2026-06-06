@@ -197,7 +197,15 @@ def _find_anchors(events: list[_RawEvent], pack: SubjectReviewPack) -> list[_Anc
             signals.add("direct_usage")
             direct_indices.add(event.index)
         signals.update(_contextual_need_signals(event, pack))
+        signals.update(_signal_pack_signals(event, pack))
+        if any(signal.startswith("signal_pack:positive:") for signal in signals):
+            if any(":tool:" in signal or ":command:" in signal for signal in signals):
+                signals.add("direct_usage")
+                direct_indices.add(event.index)
+            else:
+                signals.add("contextual_need:signal_pack")
         if signals:
+            event.signal_ids = sorted(signals)
             anchors.append(_Anchor(index=event.index, signals=signals, score=_score_signals(signals)))
     anchors.extend(_fallback_anchors(events, pack, direct_indices))
     return sorted(anchors, key=lambda item: item.index)
@@ -243,6 +251,10 @@ def _fallback_anchors(
         if any(_contains(haystack, item) for item in config.inefficient_tools):
             matched_indices.append(event.index)
     if len(matched_indices) >= config.retry_threshold and not direct_indices:
+        events[matched_indices[-1]].signal_ids = sorted(
+            set(events[matched_indices[-1]].signal_ids)
+            | {"fallback:repeated_inefficient_path", "missed_opportunity"}
+        )
         anchors.append(
             _Anchor(
                 index=matched_indices[-1],
@@ -276,7 +288,10 @@ def _episode_from_anchor_group(
     before = events[before_start:first]
     subject_events = events[first : last + 1]
     after = events[last + 1 : after_end]
-    matched_signals = sorted({signal for anchor in anchors for signal in anchor.signals})
+    matched_signals = sorted(
+        {signal for anchor in anchors for signal in anchor.signals}
+        | {signal for event in before + subject_events + after for signal in event.signal_ids}
+    )
     if "direct_usage" not in matched_signals and (
         any(signal.startswith("contextual_need:") for signal in matched_signals)
         or any(signal.startswith("fallback:") for signal in matched_signals)
@@ -294,9 +309,9 @@ def _episode_from_anchor_group(
         project_hint=project_hint,
         matched_signals=matched_signals,
         relevance_score=min(100, sum(anchor.score for anchor in anchors)),
-        before_context=[_summarize_event(event, []) for event in before],
-        subject_events=[_summarize_event(event, matched_signals) for event in subject_events],
-        after_context=[_summarize_event(event, []) for event in after],
+        before_context=[_summarize_event(event, event.signal_ids) for event in before],
+        subject_events=[_summarize_event(event, event.signal_ids or matched_signals) for event in subject_events],
+        after_context=[_summarize_event(event, event.signal_ids) for event in after],
         outcome_hint=outcome_hint,
         raw_refs=raw_refs,
         safety_summary={
@@ -333,6 +348,54 @@ def _outcome_hint(events: list[_RawEvent], matched_signals: list[str], pack: Sub
     if any(signal.startswith("fallback:") or signal == "missed_opportunity" for signal in matched_signals):
         return "missed_opportunity"
     return "unknown"
+
+
+def _signal_pack_signals(event: _RawEvent, pack: SubjectReviewPack) -> set[str]:
+    signal_pack = pack.signal_pack
+    if signal_pack is None:
+        return set()
+    text = " ".join([event.text, event.output, " ".join(str(value) for value in event.args.values())])
+    signals: set[str] = set()
+    for item in signal_pack.positive_signals.tool_names:
+        if _contains(event.tool_name, item):
+            signals.add(_signal_id("positive:tool", item))
+    for item in signal_pack.positive_signals.commands:
+        if _contains(text, item):
+            signals.add(_signal_id("positive:command", item))
+    for item in signal_pack.positive_signals.skill_names:
+        if _contains(text, item) or _contains(event.tool_name, item):
+            signals.add(_signal_id("positive:skill", item))
+    for item in signal_pack.positive_signals.mcp_names:
+        if _contains(text, item) or _contains(event.tool_name, item):
+            signals.add(_signal_id("positive:mcp", item))
+    for item in signal_pack.positive_signals.subagent_names:
+        if _contains(text, item) or _contains(event.tool_name, item):
+            signals.add(_signal_id("positive:subagent", item))
+    for item in signal_pack.positive_signals.text:
+        if _contains(text, item):
+            signals.add(_signal_id("positive:text", item))
+    for item in signal_pack.positive_signals.error_signals:
+        if _contains(text, item):
+            signals.add(_signal_id("positive:error", item))
+    for item in signal_pack.positive_signals.user_hint_signals:
+        if _contains(text, item):
+            signals.add(_signal_id("positive:user_hint", item))
+    for item in signal_pack.domain_anchors.required_any + signal_pack.domain_anchors.required_all:
+        if _contains(text, item):
+            signals.add(_signal_id("domain_anchor", item))
+    for item in signal_pack.negative_signals.exclude_contexts:
+        if _contains(text, item):
+            signals.add(_signal_id("negative:exclude_context", item))
+    for item in signal_pack.negative_signals.commands:
+        if _contains(text, item):
+            signals.add(_signal_id("negative:command", item))
+    for item in signal_pack.negative_signals.text:
+        if _contains(text, item):
+            signals.add(_signal_id("negative:text", item))
+    for item in signal_pack.ambiguous_terms.terms:
+        if _contains(text, item):
+            signals.add(_signal_id("ambiguous", item))
+    return signals
 
 
 def _subject_tool_family(tool_name: str) -> ToolFamily:
@@ -391,8 +454,16 @@ def _score_signals(signals: set[str]) -> int:
         score += 45
     if any(signal.startswith("contextual_need:user_hint") for signal in signals):
         score += 60
+    if any(signal.startswith("signal_pack:positive:") for signal in signals):
+        score += 50
+    if any(signal.startswith("signal_pack:domain_anchor:") for signal in signals):
+        score += 20
     return min(100, score)
 
 
 def _path_label(path: Path) -> str:
     return f"session_file:{stable_hash(str(path))}"
+
+
+def _signal_id(kind: str, value: object) -> str:
+    return f"signal_pack:{kind}:{stable_hash(value, length=8)}"

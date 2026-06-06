@@ -4,14 +4,26 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .models import ReviewObjective, ReviewSubject, SubjectCollectorsConfig, SubjectReviewPack
+from .models import (
+    ReviewObjective,
+    ReviewSubject,
+    SignalPackStatus,
+    SubjectCollectorsConfig,
+    SubjectReviewPack,
+    SubjectSignalPack,
+)
 
 
 def subject_dir(target: str | Path, subject_id: str) -> Path:
     return Path(target).expanduser() / ".session-review" / "subjects" / subject_id
 
 
-def load_subject_pack(path: str | Path) -> SubjectReviewPack:
+def load_subject_pack(
+    path: str | Path,
+    *,
+    signal_pack_path: str | Path | None = None,
+    include_proposed_signal_pack: bool = False,
+) -> SubjectReviewPack:
     base = Path(path).expanduser()
     subject = load_subject(base / "subject.toml")
     objective = load_objective(base / "objective.toml")
@@ -29,6 +41,11 @@ def load_subject_pack(path: str | Path) -> SubjectReviewPack:
             "objective": objective.model_dump(mode="json"),
             "collectors": collector_data,
             "context_window": context_window,
+            "signal_pack": _load_runtime_signal_pack(
+                base,
+                signal_pack_path=signal_pack_path,
+                include_proposed=include_proposed_signal_pack,
+            ),
         }
     )
 
@@ -41,6 +58,27 @@ def load_subject(path: str | Path) -> ReviewSubject:
 def load_objective(path: str | Path) -> ReviewObjective:
     data = _load_toml(path)
     return ReviewObjective.model_validate(data.get("objective", data))
+
+
+def load_signal_pack(path: str | Path) -> SubjectSignalPack:
+    data = _load_toml(path)
+    return SubjectSignalPack.model_validate(data)
+
+
+def _load_runtime_signal_pack(
+    base: Path,
+    *,
+    signal_pack_path: str | Path | None,
+    include_proposed: bool,
+) -> dict[str, Any] | None:
+    path = Path(signal_pack_path).expanduser() if signal_pack_path else base / "signal-pack.toml"
+    if not path.exists():
+        return None
+    signal_pack = load_signal_pack(path)
+    status = SignalPackStatus(str(signal_pack.pack.status))
+    if status in {SignalPackStatus.REVIEWED, SignalPackStatus.ACTIVE} or include_proposed:
+        return signal_pack.model_dump(mode="json")
+    return None
 
 
 def dump_default_subject(subject_id: str) -> str:
@@ -91,6 +129,39 @@ user_hint_signals = []
 inefficient_tools = []
 retry_threshold = 2
 missing_direct_usage_penalty = true
+"""
+
+
+def dump_default_signal_pack(subject_id: str) -> str:
+    return f"""[pack]
+id = "{subject_id}-signals"
+version = "0.2.0"
+generated_by = "manual"
+status = "proposed"
+source_refs = []
+
+[positive_signals]
+tool_names = []
+commands = []
+skill_names = []
+mcp_names = []
+subagent_names = []
+text = []
+error_signals = []
+user_hint_signals = []
+
+[domain_anchors]
+required_any = []
+required_all = []
+
+[negative_signals]
+exclude_contexts = []
+commands = []
+text = []
+
+[ambiguous_terms]
+terms = []
+require_domain_anchor = true
 """
 
 

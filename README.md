@@ -87,6 +87,44 @@ and a parser warning is recorded.
 - `session-review decide`: record a manual lifecycle decision.
 - `session-review export`: export a staged/promoted `debug_runbook_seed` draft.
 
+## Subject Review
+
+Subject review is for reusable tools, skills, MCPs, CLI workflows, or subagent
+patterns that appear across projects. It is still offline review over Codex
+session JSONL, not real-time enforcement.
+
+```bash
+uv run session-review subject init server-ssh --target /path/to/workspace
+uv run session-review subject scaffold server-ssh --target /path/to/workspace
+```
+
+The scaffold prompt asks a project-local agent to inspect the subject's tool
+project, README, skill, CLI help, and MCP schema. The agent should produce a
+small `signal-pack.toml` proposal with positive signals, negative signals,
+domain anchors, and ambiguous terms. This project does not maintain a universal
+keyword list. Proposed signal packs do not affect collection by default; mark a
+reviewed pack as `reviewed`/`active`, or pass `--include-proposed-signal-pack`
+for a local experiment.
+
+Run collection, domain discrimination, and review:
+
+```bash
+uv run session-review subject collect server-ssh \
+  --target /path/to/workspace \
+  --session-glob "/path/to/sessions/*.jsonl"
+
+uv run session-review subject discriminate server-ssh \
+  --target /path/to/workspace
+
+uv run session-review subject review server-ssh \
+  --target /path/to/workspace \
+  --with-collision
+```
+
+`subject discriminate` writes attribution hints and collision notes. Ambiguous,
+rejected, or collided episodes remain review-only and should not be treated as
+root-cause proof.
+
 ## Safety Defaults
 
 - `include_raw_text=false` by default.
@@ -103,9 +141,11 @@ promotion. It does not register, sync, execute, or publish runbooks.
 
 ## Non-goals
 
-- No LLM reviewer in v0.1.
+- No LLM reviewer in v0.2.
 - No dashboard.
 - No automatic publishing.
 - No direct `debug-runbook` runtime integration.
 - No automatic skill, MCP, subagent, hook, or runbook changes.
 - No cross-project automatic experience migration.
+- No universal keyword catalog for all subjects.
+- No automatic root-cause attribution from heuristic signals.

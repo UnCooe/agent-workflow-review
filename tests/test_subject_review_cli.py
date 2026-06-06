@@ -92,8 +92,11 @@ def test_subject_collect_review_list_and_export_cross_project(tmp_path: Path, ca
     candidates_payload = json.loads(
         (output_dir / "subject-improvement-candidates.json").read_text(encoding="utf-8")
     )
+    findings_payload = json.loads((output_dir / "subject-findings.json").read_text(encoding="utf-8"))
     rendered_candidates = json.dumps(candidates_payload, ensure_ascii=False)
     assert "Subject Review Report" in report
+    assert findings_payload["schema_version"] == "session_review.subject_findings.v0_2"
+    assert candidates_payload["schema_version"] == "session_review.subject_candidates.v0_2"
     assert candidates_payload["candidates"]
     assert any(
         item["target_type"] in {"tool_interface", "skill", "docs"}

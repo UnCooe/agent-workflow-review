@@ -1,0 +1,20 @@
+[subject]
+subject_id = "server-ssh"
+subject_type = "cli_workflow"
+display_name = "Server SSH workflow"
+description = "Cross-project review subject for server SSH connection and operations workflows."
+aliases = ["server-ssh", "ssh", "server connection"]
+owners = []
+safety_tags = ["network", "cross_project"]
+
+[context_window]
+before_events = 2
+after_events = 3
+merge_distance_events = 2
+
+[collectors.direct_usage]
+tool_names = []
+commands = ["ssh ", "scp "]
+skill_names = []
+mcp_names = []
+subagent_names = []

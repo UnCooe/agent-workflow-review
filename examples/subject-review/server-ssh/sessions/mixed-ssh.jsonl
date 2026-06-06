@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"server-ssh-mixed","cwd":"workspace/mixed-project"}}
+{"payload":{"type":"message","role":"user","content":"SSH failed, first check the repository remote, then validate the server host."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"mix-1","arguments":"{\"cmd\":\"ssh -T git@github.com\"}"}}
+{"payload":{"type":"function_call_output","call_id":"mix-1","output":"git@github.com: Permission denied (publickey)."}}
+{"payload":{"type":"function_call","name":"functions.exec_command","call_id":"mix-2","arguments":"{\"cmd\":\"ssh ops@redacted-host journalctl -u app\"}"}}
+{"payload":{"type":"function_call_output","call_id":"mix-2","output":"remote host reachable; journalctl returned recent logs"}}

@@ -42,3 +42,54 @@ expected_data = ["provider", "evidence_ref"]
 
 This file is the main project-specific customization surface in v0.1. It is
 configuration, not a DSL.
+
+## subject signal-pack.toml
+
+Subject review uses subject-local configuration under:
+
+```text
+.session-review/
+  subjects/
+    <subject_id>/
+      subject.toml
+      objective.toml
+      signal-pack.toml
+```
+
+`signal-pack.toml` is the v0.2 customization surface for cross-project subjects.
+It should be generated or edited for one subject, not reused as a global keyword
+catalog. Proposed packs do not affect collection or discrimination by default;
+mark reviewed packs as `reviewed`/`active`, or pass
+`--include-proposed-signal-pack` for a local experiment.
+
+```toml
+[pack]
+id = "server-ssh-signals"
+version = "0.2.0"
+generated_by = "codex"
+status = "proposed"
+source_refs = ["redacted-fixture"]
+
+[positive_signals]
+commands = ["ssh ops@"]
+text = ["server host", "journalctl", "systemctl"]
+error_signals = ["timeout", "connection reset"]
+
+[domain_anchors]
+required_any = ["ops@", "server host", "journalctl", "systemctl"]
+required_all = []
+
+[negative_signals]
+exclude_contexts = ["git@github.com", "git remote", "ssh -T"]
+commands = ["git push", "git fetch", "ssh -T git@"]
+text = ["GitHub", "repository remote"]
+
+[ambiguous_terms]
+terms = ["ssh", "timeout", "permission denied"]
+require_domain_anchor = true
+```
+
+Use `session-review subject validate-signals <subject_id>` to inspect a signal
+pack. Use `session-review subject discriminate <subject_id>` to produce
+attribution hints and collision notes before reviewing with
+`session-review subject review <subject_id> --with-collision`.

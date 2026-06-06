@@ -6,6 +6,9 @@ from session_review.models import CandidateStatus
 from session_review.safety import stable_hash
 
 from .models import (
+    AttributionStatus,
+    EvidenceBasis,
+    ReviewCollision,
     SubjectCandidateTarget,
     SubjectEpisode,
     SubjectFinding,
@@ -19,10 +22,11 @@ def review_subject_episodes(
     episodes: list[SubjectEpisode],
     *,
     pack: SubjectReviewPack,
+    collisions: list[ReviewCollision] | None = None,
 ) -> tuple[list[SubjectFinding], list[SubjectImprovementCandidate], str]:
-    findings = _build_findings(episodes, pack)
+    findings = _build_findings(episodes, pack, collisions=collisions or [])
     candidates = _build_candidates(findings, episodes, pack)
-    report = render_subject_report(episodes, findings, candidates, pack)
+    report = render_subject_report(episodes, findings, candidates, pack, collisions=collisions or [])
     return findings, candidates, report
 
 
@@ -31,9 +35,16 @@ def render_subject_report(
     findings: list[SubjectFinding],
     candidates: list[SubjectImprovementCandidate],
     pack: SubjectReviewPack,
+    collisions: list[ReviewCollision] | None = None,
 ) -> str:
+    collisions = collisions or []
     finding_counts = Counter(str(finding.type) for finding in findings)
     outcome_counts = Counter(episode.outcome_hint for episode in episodes)
+    attribution_counts = Counter(
+        str(episode.attribution.status)
+        for episode in episodes
+        if episode.attribution is not None
+    )
     lines = [
         "# Subject Review Report",
         "",
@@ -42,6 +53,7 @@ def render_subject_report(
         f"- episodes: {len(episodes)}",
         f"- findings: {len(findings)}",
         f"- candidates: {len(candidates)}",
+        f"- collisions: {len(collisions)}",
         "",
         "## Usage",
         f"- Direct usage episodes: {_count_signal(episodes, 'direct_usage')}",
@@ -50,19 +62,35 @@ def render_subject_report(
         "",
         "## Effectiveness",
         f"- Outcomes: {dict(outcome_counts)}",
+        f"- Attribution status: {dict(attribution_counts)}",
         "",
         "## Findings",
     ]
     if not findings:
         lines.append("- No findings.")
     for finding in findings:
-        lines.append(f"- `{finding.type}` ({finding.confidence}): {finding.rationale}")
+        lines.append(
+            f"- `{finding.type}` ({finding.confidence}, attribution={finding.attribution_status}, "
+            f"basis={finding.evidence_basis}, review_only={str(finding.review_only).lower()}): "
+            f"{finding.rationale}"
+        )
+        if finding.uncertainty:
+            lines.append(f"  - uncertainty: {finding.uncertainty}")
+    lines.extend(["", "## Collisions"])
+    if not collisions:
+        lines.append("- No collisions.")
+    for collision in collisions:
+        lines.append(
+            f"- `{collision.collision_id}` status={collision.status} "
+            f"resolution={collision.resolution} reasons={','.join(collision.reason_codes)}"
+        )
     lines.extend(["", "## Candidates"])
     if not candidates:
         lines.append("- No candidates.")
     for candidate in candidates:
         lines.append(
             f"- `{candidate.candidate_id}` {candidate.target_type}: {candidate.problem_pattern}"
+            f" attribution={candidate.attribution_status} review_only={str(candidate.review_only).lower()}"
         )
     lines.extend(
         [
@@ -100,12 +128,27 @@ def render_subject_candidates_table(candidates: list[SubjectImprovementCandidate
     return "\n".join(lines)
 
 
-def _build_findings(episodes: list[SubjectEpisode], pack: SubjectReviewPack) -> list[SubjectFinding]:
+def _build_findings(
+    episodes: list[SubjectEpisode],
+    pack: SubjectReviewPack,
+    *,
+    collisions: list[ReviewCollision],
+) -> list[SubjectFinding]:
     findings: list[SubjectFinding] = []
-    direct = [episode for episode in episodes if "direct_usage" in episode.matched_signals]
-    missed = [
+    actionable = [
         episode
         for episode in episodes
+        if not episode.review_only
+        and (
+            episode.attribution is None
+            or episode.attribution.status in {AttributionStatus.CONFIRMED, AttributionStatus.LIKELY}
+        )
+    ]
+    uncertain = [episode for episode in episodes if episode not in actionable]
+    direct = [episode for episode in actionable if "direct_usage" in episode.matched_signals]
+    missed = [
+        episode
+        for episode in actionable
         if "missed_opportunity" in episode.matched_signals
         or any(signal.startswith("contextual_need:") for signal in episode.matched_signals)
         and "direct_usage" not in episode.matched_signals
@@ -194,6 +237,30 @@ def _build_findings(episodes: list[SubjectEpisode], pack: SubjectReviewPack) -> 
                 "low",
             )
         )
+    if uncertain:
+        reason = "Episodes were kept review-only because attribution was ambiguous, rejected, or unknown."
+        finding_type = (
+            SubjectFindingType.FALSE_POSITIVE_SUBJECT_NEED
+            if any(
+                episode.attribution
+                and episode.attribution.status == AttributionStatus.REJECTED
+                for episode in uncertain
+            )
+            else SubjectFindingType.INSUFFICIENT_CONTEXT
+        )
+        findings.append(
+            _finding(
+                pack,
+                finding_type,
+                uncertain,
+                reason,
+                None,
+                "low",
+                review_only=True,
+                uncertainty="Do not promote these observations without domain-specific manual review.",
+                collision_ids=[item.collision_id for item in collisions],
+            )
+        )
     return findings
 
 
@@ -204,7 +271,7 @@ def _build_candidates(
 ) -> list[SubjectImprovementCandidate]:
     grouped: dict[SubjectCandidateTarget, list[SubjectFinding]] = defaultdict(list)
     for finding in findings:
-        if finding.target_type is not None:
+        if finding.target_type is not None and not finding.review_only:
             grouped[SubjectCandidateTarget(str(finding.target_type))].append(finding)
     candidates: list[SubjectImprovementCandidate] = []
     for target, target_findings in grouped.items():
@@ -226,6 +293,8 @@ def _build_candidates(
                     "safety": 100,
                     "reuse": 80 if len(episodes) >= 2 else 50,
                 },
+                attribution_status=_candidate_attribution_status(target_findings),
+                review_only=False,
             )
         )
     return candidates
@@ -275,8 +344,13 @@ def _finding(
     rationale: str,
     target: SubjectCandidateTarget | None,
     confidence: str,
+    review_only: bool = False,
+    uncertainty: str = "",
+    collision_ids: list[str] | None = None,
 ) -> SubjectFinding:
     episode_ids = [episode.episode_id for episode in episodes]
+    attribution_status = _episodes_attribution_status(episodes)
+    evidence_basis = _episodes_evidence_basis(episodes)
     return SubjectFinding(
         finding_id=stable_hash((pack.subject.subject_id, finding_type, episode_ids)),
         subject_id=pack.subject.subject_id,
@@ -285,6 +359,11 @@ def _finding(
         episode_ids=episode_ids,
         rationale=rationale,
         target_type=target,
+        attribution_status=attribution_status,
+        evidence_basis=evidence_basis,
+        review_only=review_only,
+        uncertainty=uncertainty,
+        collision_ids=collision_ids or [],
     )
 
 
@@ -294,3 +373,49 @@ def _count_signal(episodes: list[SubjectEpisode], signal: str) -> int:
 
 def _count_prefix(episodes: list[SubjectEpisode], prefix: str) -> int:
     return sum(1 for episode in episodes if any(signal.startswith(prefix) for signal in episode.matched_signals))
+
+
+def _episodes_attribution_status(episodes: list[SubjectEpisode]) -> AttributionStatus:
+    statuses = [
+        episode.attribution.status
+        for episode in episodes
+        if episode.attribution is not None
+    ]
+    if not statuses:
+        return AttributionStatus.UNKNOWN
+    if any(status == AttributionStatus.REJECTED for status in statuses):
+        return AttributionStatus.REJECTED
+    if any(status == AttributionStatus.AMBIGUOUS for status in statuses):
+        return AttributionStatus.AMBIGUOUS
+    if all(status == AttributionStatus.CONFIRMED for status in statuses):
+        return AttributionStatus.CONFIRMED
+    if any(status == AttributionStatus.LIKELY for status in statuses):
+        return AttributionStatus.LIKELY
+    return AttributionStatus.UNKNOWN
+
+
+def _episodes_evidence_basis(episodes: list[SubjectEpisode]) -> EvidenceBasis:
+    bases = [
+        episode.attribution.evidence_basis
+        for episode in episodes
+        if episode.attribution is not None
+    ]
+    if not bases:
+        return EvidenceBasis.UNKNOWN
+    unique = set(bases)
+    if len(unique) > 1:
+        return EvidenceBasis.MIXED
+    return bases[0]
+
+
+def _candidate_attribution_status(findings: list[SubjectFinding]) -> AttributionStatus:
+    statuses = {finding.attribution_status for finding in findings}
+    if AttributionStatus.CONFIRMED in statuses:
+        return AttributionStatus.CONFIRMED
+    if AttributionStatus.LIKELY in statuses:
+        return AttributionStatus.LIKELY
+    if AttributionStatus.AMBIGUOUS in statuses:
+        return AttributionStatus.AMBIGUOUS
+    if AttributionStatus.REJECTED in statuses:
+        return AttributionStatus.REJECTED
+    return AttributionStatus.UNKNOWN
