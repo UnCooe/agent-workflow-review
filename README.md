@@ -1,10 +1,32 @@
 # Agent Workflow Review
 
-CLI-first Agent workflow review and experience incubation layer.
+CLI-first Agent workflow audit layer.
 
-It reviews real Codex session JSONL and produces auditable improvement
-candidates for MCP tools, skills, subagent patterns, and debug-runbook seeds.
-It is not a dashboard and does not auto-publish workflow changes.
+It reviews real Codex session JSONL and produces auditable keep / kill / build
+verdicts (plus improvement candidates) for MCP tools, skills, subagent patterns,
+and debug-runbook seeds. It is not a dashboard and does not auto-publish workflow
+changes.
+
+## What This Is (Intent)
+
+> I anchor on real outcomes and audit whether each rail earns its keep. I deliver
+> keep / kill / build verdicts, not vague candidates.
+
+This layer is not a tool generator. It is an audit loop:
+
+- **Anchor on ground truth, not frequency.** A tool being called often is not
+  evidence it helped — for a tool meant to resolve in one shot, a high call count
+  is usually a failure signal (the agent kept re-trying because nothing resolved).
+  In the dominant "agent diagnoses, human decides" workflow, the ground truth is
+  your own next move: did you proceed on the analysis, or correct / redirect /
+  solve it yourself? That reaction is human ground truth and it already lives in
+  the transcript — no self-scoring required.
+- **Verdict, not candidate.** The output is a short keep / kill / build list per
+  tool, skill, and runbook — cheap enough to act on, never a dashboard.
+- **Generation is downstream of audit.** Build a new MCP/skill only when the audit
+  shows a real gap. Never generate tools whose value is unproven.
+
+The instrument must stay an order of magnitude cheaper than the work it audits.
 
 ## Quick Start
 
