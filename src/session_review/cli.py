@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from session_review.adapters.codex_jsonl import iter_recent_session_files, parse_session_files
 from session_review.candidates import (
@@ -46,6 +47,15 @@ from session_review.subject.review import (
     render_subject_candidates_table,
     review_subject_episodes,
 )
+from session_review.transcripts.aggregate import (
+    write_aggregate_artifacts,
+    write_manifest_and_task_input,
+)
+from session_review.transcripts.collect import (
+    collect_transcript_facts,
+    write_transcript_facts,
+)
+from session_review.transcripts.paths import TranscriptRunPaths
 
 
 SCHEMA_REVIEW = "session_review.review.v0"
@@ -156,6 +166,28 @@ def build_parser() -> argparse.ArgumentParser:
     subject_export.add_argument("--candidate", required=True)
     subject_export.add_argument("--output", default=None)
     subject_export.set_defaults(func=cmd_subject_export)
+
+    transcript = sub.add_parser("transcript", help="Build transcript facts and objective aggregates.")
+    transcript_sub = transcript.add_subparsers(dest="transcript_command", required=True)
+
+    transcript_collect = transcript_sub.add_parser("collect", help="Collect per-turn transcript facts.")
+    _add_transcript_common_args(transcript_collect)
+    transcript_collect.set_defaults(func=cmd_transcript_collect)
+
+    transcript_aggregate = transcript_sub.add_parser("aggregate", help="Build objective transcript aggregates.")
+    transcript_aggregate.add_argument("--output-run", required=True)
+    transcript_aggregate.add_argument("--run-id", default=None)
+    transcript_aggregate.add_argument("--date", default=None)
+    transcript_aggregate.add_argument("--timezone", default="UTC")
+    transcript_aggregate.add_argument("--date-bj", default=None)
+    transcript_aggregate.set_defaults(func=cmd_transcript_aggregate)
+
+    transcript_prepare = transcript_sub.add_parser(
+        "prepare",
+        help="Collect facts, build aggregates, and write manifest/task input.",
+    )
+    _add_transcript_common_args(transcript_prepare)
+    transcript_prepare.set_defaults(func=cmd_transcript_prepare)
     return parser
 
 
@@ -450,6 +482,50 @@ def cmd_subject_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_transcript_collect(args: argparse.Namespace) -> int:
+    session_paths = _transcript_session_paths(args)
+    run_id = _transcript_run_id(args, session_paths)
+    run_paths = TranscriptRunPaths(_transcript_output_run(args, run_id))
+    profile_path = Path(args.profile).expanduser() if args.profile else None
+    reviewer_pack_path = _resolve_reviewer_pack_path(args.reviewer_pack, profile_path)
+    reviewer_pack = load_reviewer_pack(reviewer_pack_path)
+    facts = collect_transcript_facts(
+        session_paths,
+        reviewer_pack=reviewer_pack,
+    )
+    write_transcript_facts(facts, session_files=session_paths, run_paths=run_paths)
+    return 0
+
+
+def cmd_transcript_aggregate(args: argparse.Namespace) -> int:
+    if args.date_bj:
+        args.date = args.date_bj
+        args.timezone = "Asia/Shanghai"
+    run_paths = TranscriptRunPaths(Path(args.output_run).expanduser())
+    run_id = args.run_id or run_paths.root.name
+    window = _transcript_window(args)
+    write_aggregate_artifacts(run_paths=run_paths, run_id=run_id, window=window)
+    return 0
+
+
+def cmd_transcript_prepare(args: argparse.Namespace) -> int:
+    session_paths = _transcript_session_paths(args)
+    run_id = _transcript_run_id(args, session_paths)
+    run_paths = TranscriptRunPaths(_transcript_output_run(args, run_id))
+    profile_path = Path(args.profile).expanduser() if args.profile else None
+    reviewer_pack_path = _resolve_reviewer_pack_path(args.reviewer_pack, profile_path)
+    reviewer_pack = load_reviewer_pack(reviewer_pack_path)
+    facts = collect_transcript_facts(
+        session_paths,
+        reviewer_pack=reviewer_pack,
+    )
+    write_transcript_facts(facts, session_files=session_paths, run_paths=run_paths)
+    window = _transcript_window(args)
+    write_aggregate_artifacts(run_paths=run_paths, run_id=run_id, window=window)
+    write_manifest_and_task_input(run_paths=run_paths, run_id=run_id, window=window)
+    return 0
+
+
 def _resolve_reviewer_pack_path(raw: str | None, profile_path: Path | None) -> Path | None:
     if raw:
         return Path(raw).expanduser()
@@ -502,6 +578,129 @@ def _subject_session_paths(args: argparse.Namespace) -> list[Path]:
     if not sessions.exists():
         return []
     return [path for path in sorted(sessions.glob("**/*.jsonl")) if path.stat().st_mtime >= cutoff]
+
+
+def _add_transcript_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", default=None)
+    parser.add_argument("--reviewer-pack", default=None)
+    parser.add_argument("--codex-home", default="~/.codex")
+    parser.add_argument("--output-run", default=None)
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--date", default=None)
+    parser.add_argument("--timezone", default="UTC")
+    parser.add_argument("--date-bj", default=None)
+    parser.add_argument("--since-hours", type=int, default=None)
+    parser.add_argument("--since-days", type=int, default=None)
+    parser.add_argument("--session", action="append", default=[])
+    parser.add_argument("--session-glob", default=None)
+
+
+def _transcript_session_paths(args: argparse.Namespace) -> list[Path]:
+    paths = [Path(item).expanduser() for item in getattr(args, "session", [])]
+    if getattr(args, "session_glob", None):
+        paths.extend(Path(item).expanduser() for item in sorted(glob.glob(args.session_glob, recursive=True)))
+    if paths:
+        return sorted(paths)
+
+    codex_home = Path(getattr(args, "codex_home", "~/.codex")).expanduser()
+    sessions = codex_home / "sessions"
+    if not sessions.exists():
+        return []
+    window = _transcript_window(args)
+    start = _parse_window_ts(window.get("start"))
+    end = _parse_window_ts(window.get("end"))
+    discovered = sorted(sessions.glob("**/*.jsonl"))
+    if start is None and end is None:
+        return discovered
+    selected: list[Path] = []
+    for path in discovered:
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if start is not None and modified < start:
+            continue
+        if end is not None and modified > end:
+            continue
+        selected.append(path)
+    return selected
+
+
+def _transcript_window(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "date_bj", None):
+        args.date = args.date_bj
+        args.timezone = "Asia/Shanghai"
+    tz_name = getattr(args, "timezone", None) or "UTC"
+    tz = ZoneInfo(tz_name)
+    if getattr(args, "date", None):
+        start_local = datetime.fromisoformat(args.date).replace(tzinfo=tz)
+        end_local = start_local + timedelta(days=1)
+        return {
+            "mode": "natural_day",
+            "timezone": tz_name,
+            "start": start_local.isoformat(),
+            "end": end_local.isoformat(),
+        }
+    now_utc = datetime.now(timezone.utc)
+    if getattr(args, "since_hours", None) is not None:
+        start = now_utc - timedelta(hours=args.since_hours)
+        return {
+            "mode": "since_hours",
+            "timezone": tz_name,
+            "start": start.isoformat(),
+            "end": now_utc.isoformat(),
+            "hours": args.since_hours,
+        }
+    if getattr(args, "since_days", None) is not None:
+        start = now_utc - timedelta(days=args.since_days)
+        return {
+            "mode": "since_days",
+            "timezone": tz_name,
+            "start": start.isoformat(),
+            "end": now_utc.isoformat(),
+            "days": args.since_days,
+        }
+    return {
+        "mode": "explicit_sessions",
+        "timezone": tz_name,
+    }
+
+
+def _parse_window_ts(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _transcript_run_id(args: argparse.Namespace, session_paths: list[Path]) -> str:
+    if getattr(args, "run_id", None):
+        return str(args.run_id)
+    if getattr(args, "date_bj", None):
+        return f"{args.date_bj}-asia-shanghai"
+    if getattr(args, "date", None):
+        tz = str(getattr(args, "timezone", "UTC")).lower().replace("/", "-").replace("_", "-")
+        return f"{args.date}-{tz}"
+    if getattr(args, "since_hours", None) is not None:
+        return f"since-hours-{args.since_hours}-{stable_session_hash(session_paths)}"
+    if getattr(args, "since_days", None) is not None:
+        return f"since-days-{args.since_days}-{stable_session_hash(session_paths)}"
+    return f"manual-{stable_session_hash(session_paths)}"
+
+
+def _transcript_output_run(args: argparse.Namespace, run_id: str) -> Path:
+    if getattr(args, "output_run", None):
+        return Path(args.output_run).expanduser()
+    return Path(".session-review") / "output" / "runs" / run_id
+
+
+def stable_session_hash(session_paths: list[Path]) -> str:
+    labels = [str(path.expanduser()) for path in sorted(session_paths)]
+    from session_review.safety import stable_hash
+
+    return stable_hash(labels)
 
 
 def _render_subject_collect_summary(
